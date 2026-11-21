@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.17.2
+          terraform_wrapper: false
+      - name: Format
+        run: terraform fmt -check -recursive -diff
+      - name: Init (no backend, no credentials)
+        run: terraform init -backend=false -input=false
+      - name: Validate
+        run: terraform validate
+      - name: Test (mocked AWS provider, plans dev and prod)
+        run: terraform test
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: pip install checkov==3.4.6
+      - name: checkov (fails on any unskipped finding)
+        run: checkov -d . --framework terraform --compact --quiet
