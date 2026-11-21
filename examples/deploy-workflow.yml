@@ -1,0 +1,68 @@
+# Example: copy to .github/workflows/deploy.yml in the application repository.
+# Builds an image, pushes it to ECR and rolls the ECS service, using the OIDC deploy role
+# from this stack. No AWS access keys are stored in GitHub.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write # lets the job request an OIDC token for AWS
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-1
+  ECR_REPOSITORY: shop-prod
+  ECS_CLUSTER: shop-prod
+  ECS_SERVICE: shop-prod
+  TASK_FAMILY: shop-prod
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # No `environment:` here: it would change the OIDC subject to repo:<owner>/<repo>:environment:<name>,
+    # and this role trusts branch and tag subjects only.
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }} # terraform output deploy_role_arn
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v4
+
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+
+      - name: Current task definition
+        run: aws ecs describe-task-definition --task-definition "$TASK_FAMILY" --query taskDefinition > task-definition.json
+
+      - id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: app
+          image: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}@${{ steps.build.outputs.digest }}
+
+      - uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.ECS_SERVICE }}
+          wait-for-service-stability: true
